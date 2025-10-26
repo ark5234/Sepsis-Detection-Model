@@ -35,9 +35,12 @@ best_*.h5
 
 # Data files (large files not included in repository)
 *.csv
+*.psv
 Dataset.csv
 training_setA/
 training_setB/
+/training_setA/**
+/training_setB/**
 
 # Output files
 *.png
