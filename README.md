@@ -7,10 +7,13 @@ This repository contains a comprehensive deep learning framework for early sepsi
 ## Dataset
 
 **Source**: PhysioNet Challenge 2019  
+**Download**: [PhysioNet Challenge 2019](https://physionet.org/content/challenge-2019/)  
 **Total Records**: 1,552,210 clinical measurements  
 **Patients**: 40,336 ICU patients  
 **Features**: 44 raw clinical features including vital signs, laboratory values, and demographics  
 **Target**: Binary classification for sepsis detection
+
+**Note**: Due to file size limitations, the dataset is not included in this repository. Please download it from the PhysioNet website and place the files in the `training_setA/` and `training_setB/` directories.
 
 ### Data Statistics
 
@@ -106,18 +109,19 @@ This repository contains a comprehensive deep learning framework for early sepsi
 
 ## Repository Structure
 
-```
+```plaintext
 .
 ├── sepsis-detection-note (1).ipynb    # Main analysis notebook
-├── Dataset.csv                         # Metadata and dataset information
 ├── LICENSE.txt                         # License information
 ├── README.md                          # This file
 ├── RESEARCH_IMPROVEMENTS_ROADMAP.md   # Detailed improvement methodology
 ├── TRAINING_FIXES_APPLIED.md          # Training optimization documentation
 ├── DATA_PIPELINE_FLOW.md              # Complete data processing pipeline
 ├── FEATURE_SELECTION_GUIDE.md         # Feature selection rationale
-├── training_setA/                     # PhysioNet training data Set A
-├── training_setB/                     # PhysioNet training data Set B
+├── requirements.txt                   # Python dependencies
+├── .gitignore                         # Git ignore rules
+├── training_setA/                     # PhysioNet training data Set A (not included)
+├── training_setB/                     # PhysioNet training data Set B (not included)
 ├── utility_sepsis_diagram.svg         # Sepsis utility function diagram
 └── utility_nonsepsis_diagram.svg      # Non-sepsis utility function diagram
 ```

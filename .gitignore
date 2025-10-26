@@ -33,11 +33,11 @@ wheels/
 *.keras
 best_*.h5
 
-# Data files (keep structure but ignore large data)
+# Data files (large files not included in repository)
 *.csv
-!Dataset.csv
-training_setA/training/*.psv
-training_setB/training_setB/*.psv
+Dataset.csv
+training_setA/
+training_setB/
 
 # Output files
 *.png
