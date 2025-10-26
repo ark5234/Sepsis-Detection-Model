@@ -1,0 +1,70 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*/.ipynb_checkpoints/*
+
+# Model checkpoints
+*.h5
+*.hdf5
+*.keras
+best_*.h5
+
+# Data files (keep structure but ignore large data)
+*.csv
+!Dataset.csv
+training_setA/training/*.psv
+training_setB/training_setB/*.psv
+
+# Output files
+*.png
+*.jpg
+*.svg
+!utility_*.svg
+*.pdf
+*.tex
+publication_table.tex
+model_comparison.csv
+research_model_evaluation.png
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temporary files
+*.tmp
+*.temp
