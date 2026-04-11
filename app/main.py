@@ -33,6 +33,8 @@ model_service = SepsisModelService(artifact_dir=ARTIFACT_DIR)
 
 SUPPORTED_TABULAR_EXTENSIONS = {".csv", ".psv"}
 SUPPORTED_BUNDLE_EXTENSIONS = {".zip"}
+MAX_MULTIPART_FILES = 50000
+MAX_MULTIPART_FIELDS = 50000
 
 
 class ManualPredictionRequest(BaseModel):
@@ -135,6 +137,8 @@ def _read_uploaded_files(datasets: List[UploadFile]) -> pd.DataFrame:
     for dataset in datasets:
         if dataset is None:
             continue
+        if not hasattr(dataset, "filename") or not hasattr(dataset, "file"):
+            continue
         if not dataset.filename:
             continue
         frames.append(_read_uploaded_dataset(dataset))
@@ -143,6 +147,26 @@ def _read_uploaded_files(datasets: List[UploadFile]) -> pd.DataFrame:
         raise HTTPException(status_code=400, detail="No usable files were uploaded.")
 
     return pd.concat(frames, ignore_index=True, sort=False)
+
+
+async def _extract_uploads_from_form(request: Request, field_name: str = "datasets") -> List[UploadFile]:
+    try:
+        form = await request.form(max_files=MAX_MULTIPART_FILES, max_fields=MAX_MULTIPART_FIELDS)
+    except TypeError:
+        form = await request.form()
+
+    def _is_upload_like(item: Any) -> bool:
+        return hasattr(item, "filename") and (hasattr(item, "file") or hasattr(item, "read"))
+
+    uploads = [item for item in form.getlist(field_name) if _is_upload_like(item)]
+
+    if not uploads:
+        uploads = [item for _, item in form.multi_items() if _is_upload_like(item)]
+
+    if not uploads:
+        raise HTTPException(status_code=400, detail=f"No usable files were uploaded in field '{field_name}'.")
+
+    return uploads
 
 
 def _train_and_respond(dataframe: pd.DataFrame, source_label: str) -> Dict[str, Any]:
@@ -201,7 +225,8 @@ async def train_model(dataset: UploadFile = File(...)) -> Dict[str, Any]:
 
 
 @app.post("/api/train/files")
-async def train_model_from_files(datasets: List[UploadFile] = File(...)) -> Dict[str, Any]:
+async def train_model_from_files(request: Request) -> Dict[str, Any]:
+    datasets = await _extract_uploads_from_form(request, field_name="datasets")
     dataframe = _read_uploaded_files(datasets)
     return _train_and_respond(dataframe, source_label="folder/files upload")
 
@@ -212,7 +237,8 @@ async def predict_from_csv(dataset: UploadFile = File(...)) -> Dict[str, Any]:
 
 
 @app.post("/api/predict/files")
-async def predict_from_files(datasets: List[UploadFile] = File(...)) -> Dict[str, Any]:
+async def predict_from_files(request: Request) -> Dict[str, Any]:
+    datasets = await _extract_uploads_from_form(request, field_name="datasets")
     dataframe = _read_uploaded_files(datasets)
     return _predict_and_respond(dataframe)
 
