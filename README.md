@@ -504,6 +504,30 @@ jupyter notebook sepsis-detection-KAGGLE-READY.ipynb
 # Just upload the notebook and Dataset.csv
 ```
 
+### Run the Sepsis Detection Webapp
+
+```bash
+# Install dependencies (includes FastAPI web stack)
+pip install -r requirements.txt
+
+# Start local server
+python run.py
+```
+
+Open `http://127.0.0.1:8000` in your browser.
+
+Webapp capabilities:
+- Train a patient-level model from uploaded ICU CSV data
+- Run batch prediction from uploaded patient timeline CSV files
+- Run quick single-patient bedside prediction from manual vital signs
+- Auto-optimized probability threshold for F1-score (clinical balance)
+
+API endpoints:
+- `GET /api/status`
+- `POST /api/train` (multipart form, field name: `dataset`)
+- `POST /api/predict/csv` (multipart form, field name: `dataset`)
+- `POST /api/predict/manual` (JSON body)
+
 ### Quick Start
 
 ```python

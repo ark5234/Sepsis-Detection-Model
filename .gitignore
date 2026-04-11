@@ -32,6 +32,8 @@ wheels/
 *.hdf5
 *.keras
 best_*.h5
+*.joblib
+artifacts/
 
 # Data files (large files not included in repository)
 *.csv

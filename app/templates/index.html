@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Sepsis Detection Clinical Webapp</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=Manrope:wght@400;500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <div class="orb orb-a"></div>
+    <div class="orb orb-b"></div>
+
+    <header class="hero container">
+        <p class="eyebrow">Clinical Decision Support</p>
+        <h1>Sepsis Detection Webapp</h1>
+        <p class="hero-copy">
+            Train from ICU time-series CSV, optimize threshold by F1-score, and run real-time patient risk estimation using the notebook-derived feature engineering pipeline.
+        </p>
+        <div class="status-strip" id="statusStrip">
+            <span class="badge" id="modelStateBadge">
+                {% if status.ready %}Model Ready{% else %}Model Not Trained{% endif %}
+            </span>
+            <span class="badge badge-soft" id="thresholdBadge">
+                Threshold: {% if status.ready %}{{ status.threshold }}{% else %}N/A{% endif %}
+            </span>
+            <span class="badge badge-soft" id="featureCountBadge">
+                Features: {% if status.ready %}{{ status.feature_count }}{% else %}N/A{% endif %}
+            </span>
+        </div>
+    </header>
+
+    <main class="container app-grid">
+        <section class="panel">
+            <h2>1. Train Model</h2>
+            <p>Upload a training dataset containing patient trajectories and a sepsis label column.</p>
+            <form id="trainForm" class="stack" enctype="multipart/form-data">
+                <label class="field-label" for="trainCsv">Training Data File (CSV/PSV/ZIP)</label>
+                <input id="trainCsv" name="dataset" type="file" accept=".csv,.psv,.zip">
+                <label class="field-label" for="trainFolder">Or Select PhysioNet Folder (training_setA/B)</label>
+                <input id="trainFolder" type="file" webkitdirectory directory multiple>
+                <button type="submit" class="btn btn-primary">Train Clinical Model</button>
+            </form>
+            <ul class="hint-list">
+                <li>Expected target columns: SepsisLabel, sepsis, target, or label.</li>
+                <li>Patient ID and hour columns are auto-detected when possible.</li>
+                <li>Folder upload supports raw .psv files from training_setA/training_setB.</li>
+            </ul>
+        </section>
+
+        <section class="panel">
+            <h2>2. Predict from CSV</h2>
+            <p>Upload one or more patient timelines to score risk probability at patient level.</p>
+            <form id="predictCsvForm" class="stack" enctype="multipart/form-data">
+                <label class="field-label" for="predictCsv">Inference Data File (CSV/PSV/ZIP)</label>
+                <input id="predictCsv" name="dataset" type="file" accept=".csv,.psv,.zip">
+                <label class="field-label" for="predictFolder">Or Select Folder of PSV Files</label>
+                <input id="predictFolder" type="file" webkitdirectory directory multiple>
+                <button type="submit" class="btn btn-accent">Run Batch Prediction</button>
+            </form>
+            <ul class="hint-list">
+                <li>One CSV can contain multiple patients.</li>
+                <li>If hour is missing, sequence order is inferred.</li>
+                <li>ZIP or folder uploads are merged automatically before prediction.</li>
+            </ul>
+        </section>
+
+        <section class="panel panel-wide">
+            <h2>3. Quick Bedside Prediction</h2>
+            <p>Enter current vitals to estimate immediate sepsis risk for a single patient.</p>
+            <form id="manualForm" class="manual-grid">
+                <label>
+                    HR
+                    <input type="number" step="0.1" name="hr" value="98" required>
+                </label>
+                <label>
+                    O2Sat
+                    <input type="number" step="0.1" name="o2sat" value="94" required>
+                </label>
+                <label>
+                    Temp (C)
+                    <input type="number" step="0.1" name="temp" value="38.2" required>
+                </label>
+                <label>
+                    SBP
+                    <input type="number" step="0.1" name="sbp" value="102" required>
+                </label>
+                <label>
+                    MAP
+                    <input type="number" step="0.1" name="map" value="68" required>
+                </label>
+                <label>
+                    Resp
+                    <input type="number" step="0.1" name="resp" value="24" required>
+                </label>
+                <label>
+                    Age
+                    <input type="number" step="1" name="age" value="64" required>
+                </label>
+                <label>
+                    Gender (0/1 or text)
+                    <input type="text" name="gender" value="1" required>
+                </label>
+                <label>
+                    DBP
+                    <input type="number" step="0.1" name="dbp" value="58">
+                </label>
+                <label>
+                    ICU LoS Hours
+                    <input type="number" step="1" name="iculos" value="30" required>
+                </label>
+                <div class="manual-actions">
+                    <button type="submit" class="btn btn-primary">Predict Single Patient</button>
+                </div>
+            </form>
+        </section>
+    </main>
+
+    <section class="container panel output-panel" id="resultPanel">
+        <div class="output-head">
+            <h2>Output</h2>
+            <span id="statusMessage">Ready</span>
+        </div>
+        <pre id="resultBox">No operation run yet.</pre>
+    </section>
+
+    <script>
+        window.__INITIAL_STATUS__ = {{ status | tojson }};
+    </script>
+    <script src="/static/app.js" defer></script>
+</body>
+</html>
