@@ -1,4 +1,4 @@
-# Python
+# ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *$py.class
@@ -23,11 +23,11 @@ wheels/
 .installed.cfg
 *.egg
 
-# Jupyter Notebook
+# ── Jupyter Notebook ──────────────────────────────────────────────────────────
 .ipynb_checkpoints
 */.ipynb_checkpoints/*
 
-# Model checkpoints
+# ── Model checkpoints (large binaries) ───────────────────────────────────────
 *.h5
 *.hdf5
 *.keras
@@ -35,41 +35,55 @@ best_*.h5
 *.joblib
 artifacts/
 
-# Data files (large files not included in repository)
-*.csv
-*.psv
+# ── Data files (large — not tracked in repo) ─────────────────────────────────
 Dataset.csv
+*.psv
 training_setA/
 training_setB/
 /training_setA/**
 /training_setB/**
 
-# Output files
-*.png
-*.jpg
-*.svg
-!utility_*.svg
-*.pdf
-*.tex
-publication_table.tex
-model_comparison.csv
-research_model_evaluation.png
+# ── LaTeX build artefacts (not tracked) ──────────────────────────────────────
+*.aux
+*.fdb_latexmk
+*.fls
+*.synctex.gz
+*.toc
+*.lof
+*.lot
+*.bbl
+*.blg
+*.run.xml
+*.bcf
+# Keep the compiled PDF and .out for hyperref bookmarks
+# (we DO want *.tex and *.pdf committed)
 
-# Logs
+# ── Image / figure files ──────────────────────────────────────────────────────
+# Ignore generated SVG test files but keep results/figures/
+utility_nonsepsis_diagram.svg
+utility_sepsis_diagram.svg
+
+# ── Log / debug files ────────────────────────────────────────────────────────
 *.log
+crash.log
+debug.log
+out.log
 
-# IDE
+# ── IDE ───────────────────────────────────────────────────────────────────────
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 
-# OS
+# ── OS ────────────────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
 desktop.ini
 
-# Temporary files
+# ── Temporary files ───────────────────────────────────────────────────────────
 *.tmp
 *.temp
+
+# ── Secrets ───────────────────────────────────────────────────────────────────
+.env

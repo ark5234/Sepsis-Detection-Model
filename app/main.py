@@ -13,6 +13,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 from app.ml.model_service import SepsisModelService
+from app.ml.gemini_service import GeminiClinicalAssistant
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -22,14 +23,19 @@ ARTIFACT_DIR = PROJECT_ROOT / "artifacts"
 
 
 app = FastAPI(
-    title="Sepsis Detection Clinical Webapp",
-    description="Train and serve sepsis risk predictions from ICU time-series data.",
-    version="1.0.0",
+    title="DPCT Sepsis Detection — Clinical Inference API",
+    description=(
+        "Serves patient-level sepsis risk predictions using the Dual-Path Clinical Transformer (DPCT). "
+        "Training requires a GPU — run sepsis_transformer_paper.ipynb on Kaggle, then copy the "
+        "saved dpct_model_weights.pth into the artifacts/ directory."
+    ),
+    version="2.0.0",
 )
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 model_service = SepsisModelService(artifact_dir=ARTIFACT_DIR)
+gemini_assistant = GeminiClinicalAssistant()
 
 SUPPORTED_TABULAR_EXTENSIONS = {".csv", ".psv"}
 SUPPORTED_BUNDLE_EXTENSIONS = {".zip"}
@@ -37,7 +43,7 @@ MAX_MULTIPART_FILES = 50000
 MAX_MULTIPART_FIELDS = 50000
 
 
-class ManualPredictionRequest(BaseModel):
+class Measurement(BaseModel):
     hr: float = Field(..., ge=20, le=260)
     o2sat: float = Field(..., ge=40, le=100)
     temp: float = Field(..., ge=30, le=43)
@@ -47,7 +53,18 @@ class ManualPredictionRequest(BaseModel):
     age: float = Field(..., ge=0, le=120)
     gender: Union[str, int, float] = Field(default=0)
     dbp: Optional[float] = Field(default=None, ge=20, le=180)
+    wbc: Optional[float] = Field(default=None, ge=0.1, le=200)
     iculos: float = Field(default=6, ge=0, le=1000)
+
+
+class ManualPredictionRequest(BaseModel):
+    measurements: List[Measurement]
+
+
+class ExplainRequest(BaseModel):
+    query: str
+    patient_context: Optional[Dict[str, Any]] = None
+    history: Optional[List[Dict[str, str]]] = None
 
 
 def _has_patient_identifier(columns: List[str]) -> bool:
@@ -169,24 +186,6 @@ async def _extract_uploads_from_form(request: Request, field_name: str = "datase
     return uploads
 
 
-def _train_and_respond(dataframe: pd.DataFrame, source_label: str) -> Dict[str, Any]:
-    try:
-        result = model_service.train_from_dataframe(dataframe)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:  # pragma: no cover - defensive service path
-        raise HTTPException(status_code=500, detail=f"Training failed: {exc}") from exc
-
-    return {
-        "message": f"Training completed successfully ({source_label}).",
-        "patients": result.patients,
-        "feature_count": result.feature_count,
-        "class_distribution": result.class_distribution,
-        "metrics": result.metrics,
-        "status": model_service.status(),
-    }
-
-
 def _predict_and_respond(dataframe: pd.DataFrame) -> Dict[str, Any]:
     try:
         predictions = model_service.predict_from_dataframe(dataframe)
@@ -205,9 +204,9 @@ def _predict_and_respond(dataframe: pd.DataFrame) -> Dict[str, Any]:
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(
-        request=request,
-        name="index.html",
-        context={
+        "index.html",
+        {
+            "request": request,
             "status": model_service.status(),
         },
     )
@@ -219,16 +218,16 @@ async def status() -> Dict[str, Any]:
 
 
 @app.post("/api/train")
-async def train_model(dataset: UploadFile = File(...)) -> Dict[str, Any]:
-    dataframe = _read_uploaded_dataset(dataset)
-    return _train_and_respond(dataframe, source_label="single upload")
+async def train_model_not_supported() -> Dict[str, Any]:
+    raise HTTPException(
+        status_code=501,
+        detail=(
+            "In-browser training is not supported for the DPCT model — it requires a GPU and ~30 min. "
+            "Please train using sepsis_transformer_paper.ipynb on Kaggle, then save and download "
+            "dpct_model_weights.pth and place it in the artifacts/ directory."
+        ),
+    )
 
-
-@app.post("/api/train/files")
-async def train_model_from_files(request: Request) -> Dict[str, Any]:
-    datasets = await _extract_uploads_from_form(request, field_name="datasets")
-    dataframe = _read_uploaded_files(datasets)
-    return _train_and_respond(dataframe, source_label="folder/files upload")
 
 @app.post("/api/predict/csv")
 async def predict_from_csv(dataset: UploadFile = File(...)) -> Dict[str, Any]:
@@ -254,6 +253,15 @@ async def predict_from_manual(payload: ManualPredictionRequest) -> Dict[str, Any
         raise HTTPException(status_code=500, detail=f"Prediction failed: {exc}") from exc
 
     return {
-        "threshold": model_service.threshold,
         "prediction": prediction,
     }
+
+
+@app.post("/api/explain")
+async def explain_prediction(payload: ExplainRequest) -> Dict[str, Any]:
+    response_text = gemini_assistant.explain_prediction(
+        query=payload.query,
+        patient_context=payload.patient_context,
+        history=payload.history
+    )
+    return {"explanation": response_text}

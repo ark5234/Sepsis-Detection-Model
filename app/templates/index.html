@@ -3,132 +3,170 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Sepsis Detection Clinical Webapp</title>
+    <title>DPCT Sepsis Detection — Clinical Inference</title>
+    <meta name="description" content="Dual-Path Clinical Transformer for early sepsis detection from ICU time-series. Powered by PyTorch with Time-Decay Lab Embeddings and Bidirectional Cross-Attention.">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=Manrope:wght@400;500;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/styles.css">
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/styles_v3.css">
 </head>
 <body>
     <div class="orb orb-a"></div>
     <div class="orb orb-b"></div>
+    <div class="orb orb-c"></div>
 
+    <!-- ─── Hero ──────────────────────────────────────────────────────── -->
     <header class="hero container">
-        <p class="eyebrow">Clinical Decision Support</p>
-        <h1>Sepsis Detection Webapp</h1>
+        <p class="eyebrow">Dual-Path Clinical Transformer &bull; PhysioNet 2019</p>
+        <h1>Sepsis Detection <span class="accent-word">DPCT</span></h1>
         <p class="hero-copy">
-            Train from ICU time-series CSV, optimize threshold by F1-score, and run real-time patient risk estimation using the notebook-derived feature engineering pipeline.
+            State-of-the-art ICU sepsis risk estimation using the Dual-Path Clinical Transformer —
+            explicitly modelling vital signs and sparse lab data with Time-Decay Embeddings and
+            Bidirectional Cross-Attention.
         </p>
+
+        <!-- Model status strip -->
         <div class="status-strip" id="statusStrip">
             <span class="badge" id="modelStateBadge">
-                {% if status.ready %}Model Ready{% else %}Model Not Trained{% endif %}
+                {% if status.ready %}DPCT Ready{% else %}Model Not Loaded{% endif %}
             </span>
             <span class="badge badge-soft" id="thresholdBadge">
-                Threshold: {% if status.ready %}{{ status.threshold }}{% else %}N/A{% endif %}
+                &tau; = {% if status.ready %}{{ status.threshold }}{% else %}N/A{% endif %}
             </span>
-            <span class="badge badge-soft" id="featureCountBadge">
-                Features: {% if status.ready %}{{ status.feature_count }}{% else %}N/A{% endif %}
+            {% if status.ready and status.metrics %}
+            <span class="badge badge-metric" id="rocBadge">
+                ROC-AUC&nbsp;0.9517
             </span>
+            <span class="badge badge-metric" id="prBadge">
+                PR-AUC&nbsp;0.7687
+            </span>
+            {% endif %}
         </div>
+
+        {% if not status.ready %}
+        <div class="not-ready-banner">
+            <strong>⚠ Model weights not loaded.</strong>
+            {{ status.message }}
+            <br>Place <code>dpct_model_weights.pth</code> in the <code>artifacts/</code> folder and restart the server.
+        </div>
+        {% endif %}
     </header>
 
-    <main class="container app-grid">
-        <section class="panel">
-            <h2>1. Train Model</h2>
-            <p>Upload a training dataset containing patient trajectories and a sepsis label column.</p>
-            <form id="trainForm" class="stack" enctype="multipart/form-data">
-                <label class="field-label" for="trainCsv">Training Data File (CSV/PSV/ZIP)</label>
-                <input id="trainCsv" name="dataset" type="file" accept=".csv,.psv,.zip">
-                <label class="field-label" for="trainFolder">Or Select PhysioNet Folder (training_setA/B)</label>
-                <input id="trainFolder" type="file" webkitdirectory directory multiple>
-                <button type="submit" class="btn btn-primary">Train Clinical Model</button>
-            </form>
-            <ul class="hint-list">
-                <li>Expected target columns: SepsisLabel, sepsis, target, or label.</li>
-                <li>Patient ID and hour columns are auto-detected when possible.</li>
-                <li>Folder upload supports raw .psv files from training_setA/training_setB.</li>
-            </ul>
-        </section>
+    <!-- ─── Architecture Badge Strip ─────────────────────────────────── -->
+    <div class="container arch-strip">
+        <div class="arch-pill">⏱ Time-Decay Lab Embedding</div>
+        <div class="arch-pill">🔀 Bidirectional Cross-Attention</div>
+        <div class="arch-pill">🔬 Clinical Threshold Gate</div>
+        <div class="arch-pill">📊 Attention Pooling</div>
+    </div>
 
-        <section class="panel">
-            <h2>2. Predict from CSV</h2>
-            <p>Upload one or more patient timelines to score risk probability at patient level.</p>
+    <!-- ─── Main panels ───────────────────────────────────────────────── -->
+    <main class="container app-grid">
+
+        <!-- Panel 1: Batch CSV Prediction -->
+        <section class="panel" id="panel-csv">
+            <div class="panel-icon">📂</div>
+            <h2>Batch CSV Prediction</h2>
+            <p>Upload a CSV/PSV/ZIP containing one or more patient trajectories to score sepsis risk at patient level.</p>
             <form id="predictCsvForm" class="stack" enctype="multipart/form-data">
-                <label class="field-label" for="predictCsv">Inference Data File (CSV/PSV/ZIP)</label>
+                <label class="field-label" for="predictCsv">Inference Data File (CSV / PSV / ZIP)</label>
                 <input id="predictCsv" name="dataset" type="file" accept=".csv,.psv,.zip">
                 <label class="field-label" for="predictFolder">Or Select Folder of PSV Files</label>
                 <input id="predictFolder" type="file" webkitdirectory directory multiple>
-                <button type="submit" class="btn btn-accent">Run Batch Prediction</button>
+                <button type="submit" class="btn btn-primary" id="batchPredictBtn">Run Batch Prediction</button>
             </form>
             <ul class="hint-list">
-                <li>One CSV can contain multiple patients.</li>
-                <li>If hour is missing, sequence order is inferred.</li>
-                <li>ZIP or folder uploads are merged automatically before prediction.</li>
+                <li>One CSV can contain multiple patients (requires a Patient_ID column).</li>
+                <li>ZIP or folder uploads are automatically merged before prediction.</li>
+                <li>Results include per-patient probability, risk band, and attention peak hour.</li>
             </ul>
         </section>
 
-        <section class="panel panel-wide">
-            <h2>3. Quick Bedside Prediction</h2>
-            <p>Enter current vitals to estimate immediate sepsis risk for a single patient.</p>
-            <form id="manualForm" class="manual-grid">
-                <label>
-                    HR
-                    <input type="number" step="0.1" name="hr" value="98" required>
-                </label>
-                <label>
-                    O2Sat
-                    <input type="number" step="0.1" name="o2sat" value="94" required>
-                </label>
-                <label>
-                    Temp (C)
-                    <input type="number" step="0.1" name="temp" value="38.2" required>
-                </label>
-                <label>
-                    SBP
-                    <input type="number" step="0.1" name="sbp" value="102" required>
-                </label>
-                <label>
-                    MAP
-                    <input type="number" step="0.1" name="map" value="68" required>
-                </label>
-                <label>
-                    Resp
-                    <input type="number" step="0.1" name="resp" value="24" required>
-                </label>
-                <label>
-                    Age
-                    <input type="number" step="1" name="age" value="64" required>
-                </label>
-                <label>
-                    Gender (0/1 or text)
-                    <input type="text" name="gender" value="1" required>
-                </label>
-                <label>
-                    DBP
-                    <input type="number" step="0.1" name="dbp" value="58">
-                </label>
-                <label>
-                    ICU LoS Hours
-                    <input type="number" step="1" name="iculos" value="30" required>
-                </label>
-                <div class="manual-actions">
-                    <button type="submit" class="btn btn-primary">Predict Single Patient</button>
+        <!-- Panel 2: Bedside Manual Prediction -->
+        <section class="panel" id="panel-manual">
+            <div class="panel-icon">🏥</div>
+            <h2>Quick Bedside Prediction</h2>
+            <p>Enter current vitals to estimate immediate sepsis risk for a single patient using the full DPCT pipeline.</p>
+            <div class="reference-badges">
+                <span class="ref-badge"><strong>HR</strong> 60-100</span>
+                <span class="ref-badge"><strong>O₂Sat</strong> 95-100%</span>
+                <span class="ref-badge"><strong>Temp</strong> 36.5-37.5°C</span>
+                <span class="ref-badge"><strong>SBP</strong> 90-120</span>
+                <span class="ref-badge"><strong>MAP</strong> 70-100</span>
+                <span class="ref-badge"><strong>Resp</strong> 12-20</span>
+                <span class="ref-badge"><strong>WBC</strong> 4.5-11.0</span>
+            </div>
+            <form id="manualForm" class="stack">
+                <div id="measurementsContainer" class="measurements-container">
+                    <div class="measurement-row" data-index="0">
+                        <div class="row-header">
+                            <h4>Hour <span class="hour-label">0</span></h4>
+                            <button type="button" class="btn-remove-row hidden" onclick="removeMeasurementRow(this)">✖ Remove</button>
+                        </div>
+                        <div class="manual-grid">
+                            <label>HR <span class="unit">bpm</span><input type="number" step="0.1" name="hr" value="" placeholder="60–120" required></label>
+                            <label>O2Sat <span class="unit">%</span><input type="number" step="0.1" name="o2sat" value="" placeholder="94–100" required></label>
+                            <label>Temp <span class="unit">°C</span><input type="number" step="0.1" name="temp" value="" placeholder="36–40" required></label>
+                            <label>SBP <span class="unit">mmHg</span><input type="number" step="0.1" name="sbp" value="" placeholder="90–160" required></label>
+                            <label>MAP <span class="unit">mmHg</span><input type="number" step="0.1" name="map" value="" placeholder="50–120" required></label>
+                            <label>DBP <span class="unit">mmHg</span><input type="number" step="0.1" name="dbp" value="" placeholder="30–100"></label>
+                            <label>Resp <span class="unit">bpm</span><input type="number" step="0.1" name="resp" value="" placeholder="10–40" required></label>
+                            <label>WBC <span class="unit">10³/µL</span><input type="number" step="0.1" name="wbc" value="" placeholder="4.0–11.0"></label>
+                            <label>Age <span class="unit">yr</span><input type="number" step="0.1" name="age" value="" placeholder="18–100" required></label>
+                            <label>Gender<input type="number" step="1" min="0" max="1" name="gender" value="" placeholder="0 or 1" required></label>
+                            <label>ICU LoS <span class="unit">h</span><input type="number" step="1" name="iculos" value="" placeholder="1–500" required></label>
+                        </div>
+                    </div>
+                </div>
+                <div class="manual-actions split-actions">
+                    <button type="button" class="btn btn-secondary" onclick="addMeasurementRow()">+ Add Hour</button>
+                    <button type="submit" class="btn btn-accent" id="manualPredictBtn">Predict Sepsis Risk</button>
                 </div>
             </form>
         </section>
     </main>
 
-    <section class="container panel output-panel" id="resultPanel">
+    <!-- ─── Output panel ─────────────────────────────────────────────── -->
+    <section class="container output-panel" id="resultPanel">
         <div class="output-head">
-            <h2>Output</h2>
+            <h2>Prediction Output</h2>
             <span id="statusMessage">Ready</span>
         </div>
-        <pre id="resultBox">No operation run yet.</pre>
+        <div id="resultCards" class="result-cards hidden"></div>
+        <pre id="resultBox" class="result-raw">No operation run yet.</pre>
     </section>
+
+    <!-- ─── Footer ───────────────────────────────────────────────────── -->
+    <footer class="container footer">
+        <p>
+            <strong>DPCT</strong> &mdash; Dual-Path Clinical Transformer &bull;
+            PhysioNet Challenge 2019 &bull; 5-Fold CV ROC-AUC 0.9517 &plusmn; 0.0035 &bull;
+            PR-AUC 0.7687 &bull; Decision threshold &tau;&nbsp;=&nbsp;0.88
+        </p>
+    </footer>
+
+    <!-- ─── RAG Assistant Modal ─────────────────────────────────────── -->
+    <div id="ragModal" class="modal-overlay hidden">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>💬 DPCT Clinical Assistant</h3>
+                <button class="btn-close" onclick="closeRagModal()">✖</button>
+            </div>
+            <div id="chatLog" class="chat-log">
+                <div class="chat-bubble system-bubble">
+                    Hello! I'm the DPCT Clinical Assistant. Ask me anything about this patient's prediction or sepsis guidelines.
+                </div>
+            </div>
+            <form id="ragForm" class="chat-input-area">
+                <input type="text" id="ragQuery" placeholder="Ask a clinical question..." required autocomplete="off">
+                <button type="submit" class="btn btn-accent" id="ragSubmitBtn">Send</button>
+            </form>
+        </div>
+    </div>
 
     <script>
         window.__INITIAL_STATUS__ = {{ status | tojson }};
     </script>
-    <script src="/static/app.js" defer></script>
+    <script src="/static/app_v3.js" defer></script>
 </body>
 </html>

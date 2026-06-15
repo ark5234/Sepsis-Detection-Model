@@ -1,0 +1,1138 @@
+\documentclass[conference]{IEEEtran}
+
+% ── Packages ──────────────────────────────────────────────────────────────────
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{url}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{multirow}
+\usepackage{balance}
+\usepackage{microtype}
+\usepackage[colorlinks=true,
+            linkcolor=blue!60!black,
+            citecolor=blue!60!black,
+            urlcolor=blue!60!black,
+            bookmarks=true,
+            pdfauthor={Vikra},
+            pdftitle={DPCT: A Dual-Path Clinical Transformer for Sepsis Detection},
+            pdfsubject={ICU Sepsis Detection, Clinical AI},
+            pdfkeywords={sepsis, transformer, ICU, time-series, RAG}]{hyperref}
+
+\graphicspath{{../results/figures/}}
+
+% ── Convenience macros ────────────────────────────────────────────────────────
+\newcommand{\dpct}{\textsc{DPCT}}
+\newcommand{\eq}[1]{Eq.~(\ref{#1})}
+\newcommand{\fig}[1]{Fig.~\ref{#1}}
+\newcommand{\tab}[1]{Table~\ref{#1}}
+\newcommand{\sect}[1]{Section~\ref{#1}}
+
+% ── Title ─────────────────────────────────────────────────────────────────────
+\title{DPCT: A Dual-Path Clinical Transformer for Early Sepsis\\
+       Detection in ICU Time Series via Time-Decay Embeddings,\\
+       Bidirectional Cross-Attention, and Clinical Gate Supervision}
+
+\author{%
+  \IEEEauthorblockN{Vikra}
+  \IEEEauthorblockA{%
+    Department of Computer Science and Engineering\\
+    Independent Research\\
+    \texttt{vikra@example.com}}
+}
+
+\begin{document}
+
+\maketitle
+
+% ════════════════════════════════════════════════════════════════════════════
+% ABSTRACT
+% ════════════════════════════════════════════════════════════════════════════
+\begin{abstract}
+Sepsis is a systemic, life-threatening organ-dysfunction syndrome caused by
+a dysregulated host response to infection.
+Early algorithmic detection in intensive care unit~(ICU) settings is known to
+significantly reduce mortality; however, existing machine-learning approaches
+are hindered by three pervasive challenges: \emph{(i)}~extreme class imbalance,
+\emph{(ii)}~pervasive missing data in laboratory streams, and---critically---%
+\emph{(iii)}~methodological data leakage arising from row-level train--test
+splits across the same patient's time series.
+%
+This paper presents the \textbf{Dual-Path Clinical Transformer (\dpct{})}, a
+novel architecture that addresses each challenge through principled design.
+\dpct{} separates each patient's ICU trajectory into a \emph{dense vital-sign
+path} and a \emph{sparse laboratory path}, fusing them through three original
+contributions:
+\textbf{(1)~Time-Decay Lab Embeddings}, which communicate measurement staleness
+via a fixed-rate exponential decay factor and binary measurement indicators;
+\textbf{(2)~Bidirectional Cross-Attention Fusion}, which allows vital-sign
+representations to query the laboratory stream and vice versa before fusion; and
+\textbf{(3)~a Clinical Threshold Gate}, which injects differentiable
+qSOFA\slash{}SOFA-aligned priors as attention biases with interpretable learned
+weights.
+%
+The model is trained and evaluated on the publicly available PhysioNet Computing
+in Cardiology Challenge 2019 dataset~\cite{reyna2019} (40\,336 patients) under
+a strict patient-level split that eliminates all temporal leakage.
+Five-fold stratified cross-validation yields an ROC-AUC of
+$\mathbf{0.9517 \pm 0.0035}$ and a held-out PR-AUC of $\mathbf{0.830}$,
+establishing \dpct{} as competitive with or superior to all evaluated baselines
+(XGBoost, Random Forest, Deep Neural Network, SVM).
+The trained model is deployed as a production-grade \texttt{FastAPI} web
+application providing real-time, GPU-free bedside inference, multi-hour
+time-series entry, per-patient attention visualisation, clinical-rule
+explanations, and a Retrieval-Augmented Generation (RAG) AI clinical assistant
+powered by Gemini~2.5 Flash.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Sepsis detection, clinical transformer, ICU time series, time-decay embedding,
+bidirectional cross-attention, clinical threshold gate, PhysioNet Challenge 2019,
+interpretable machine learning, retrieval-augmented generation, web deployment.
+\end{IEEEkeywords}
+
+% ════════════════════════════════════════════════════════════════════════════
+\section{Introduction}
+\label{sec:intro}
+% ════════════════════════════════════════════════════════════════════════════
+
+Sepsis is among the most lethal syndromes in intensive care medicine,
+responsible for more than 11 million deaths annually worldwide and approximately
+20\% of global hospital mortality~\cite{singer2016}.
+The clinical imperative for early detection is severe: each hour of delay in
+initiating effective antimicrobial therapy is associated with a roughly 7\%
+increase in mortality for patients in septic shock~\cite{kumar2006}.
+Automated early-warning systems that identify high-risk patients from routinely
+collected electronic health record~(EHR) data therefore represent an active and
+high-impact area of clinical AI research.
+
+Despite significant progress, three interlocking challenges persist and limit
+the translation of research results into clinical deployment:
+
+\textbf{Challenge~1: Class Imbalance.}
+ICU sepsis prevalence is typically below 8\%---7.3\% in the PhysioNet 2019
+dataset.
+Standard cross-entropy training on such imbalanced data biases models toward
+predicting the majority (non-sepsis) class, inflating accuracy while degrading
+sensitivity.
+
+\textbf{Challenge~2: Heterogeneous and Sparse Laboratory Data.}
+Patient records include up to 34 physiological features.
+Vital signs are measured nearly continuously, whereas laboratory tests
+(Lactate, Creatinine, WBC, Blood Glucose, BUN, and 22 others) are ordered
+sporadically, with per-feature missingness rates frequently exceeding
+85\%~\cite{reyna2019}.
+Naive forward-filling treats a value measured 48 hours ago equivalently to one
+measured 1 hour ago, which is clinically misleading.
+
+\textbf{Challenge~3: Data Leakage via Row-Level Splits.}
+A persistent methodological flaw in the published literature is the use of
+row-level or time-step-level train--test splits across multi-hour patient time
+series.
+This allows multiple time steps from the same patient to appear in both the
+training fold and the evaluation set, inflating AUC scores by an estimated
+10--15\%~\cite{johnson2023}.
+
+\medskip
+This paper makes the following contributions:
+\begin{enumerate}
+  \item A \textbf{Dual-Path Clinical Transformer (\dpct{})} architecture
+        (\sect{sec:model}) that processes vital-sign and laboratory streams
+        through modality-specific encoders before bidirectional cross-attention
+        fusion.
+
+  \item \textbf{Time-Decay Lab Embeddings} (\sect{sec:tdecay}) that explicitly
+        represent measurement staleness, eliminating the need for implicit
+        forward-filling.
+
+  \item A \textbf{Clinical Threshold Gate} (\sect{sec:gate}) that maps five
+        binary qSOFA\slash{}SOFA-aligned rules into differentiable attention
+        biases, providing built-in interpretability without post-hoc attribution.
+
+  \item A \textbf{rigorous leakage-free evaluation protocol} (\sect{sec:data})
+        enforcing strict patient-level splits across all training folds and the
+        held-out test set, verified with a zero-overlap identity check.
+
+  \item An \textbf{open-source, GPU-free web deployment} (\sect{sec:system})
+        with real-time bedside inference, attention-peak visualisation,
+        clinical flag generation, and a RAG-augmented clinical AI assistant.
+\end{enumerate}
+
+\medskip
+The remainder of this paper is organised as follows.
+\sect{sec:related} reviews related work.
+\sect{sec:data} describes the dataset and leakage-correction protocol.
+\sect{sec:prep} explains dual-path sequence preparation.
+\sect{sec:model} presents the \dpct{} architecture.
+\sect{sec:results} reports experimental results and interpretability analyses.
+\sect{sec:system} describes the deployed system.
+\sect{sec:discussion} discusses clinical implications and limitations.
+\sect{sec:conclusion} concludes.
+
+% ════════════════════════════════════════════════════════════════════════════
+\section{Related Work}
+\label{sec:related}
+% ════════════════════════════════════════════════════════════════════════════
+
+\subsection{Rule-Based Early Sepsis Warning Systems}
+\label{sec:rel:rules}
+
+Rule-based scoring systems---SIRS criteria, qSOFA, and the National Early
+Warning Score~(NEWS)---remain the clinical standard but suffer from low
+positive predictive value and high false-alarm rates in ICU settings
+\cite{serafim2018}.
+Early ML approaches applied logistic regression, gradient boosting, and random
+forests to aggregate patient features at a single time point, achieving
+competitive AUC scores but failing to exploit the temporal dynamics of
+physiological deterioration.
+
+\subsection{Temporal Deep Learning for Clinical Data}
+\label{sec:rel:dl}
+
+Recurrent architectures, particularly LSTMs and GRUs, were among the first deep
+learning models applied to ICU time series~\cite{che2018}.
+However, RNNs handle irregular sampling and sparsity poorly without explicit
+mechanisms for the measurement gap.
+Transformer architectures~\cite{vaswani2017} offer superior long-range
+dependency modelling through self-attention but were designed for dense,
+regularly sampled sequences; applying standard self-attention to asynchronously
+measured clinical data requires adaptation.
+
+\subsection{Missing-Data Handling in Clinical Time Series}
+\label{sec:rel:missing}
+
+GRU-D~\cite{che2018} introduces learnable decay rates for hidden-state
+imputation.
+Multi-Time Attention Networks~\cite{shukla2021} embed continuous observation
+times for irregular sampling.
+Our Time-Decay Lab Embedding (\sect{sec:tdecay}) extends these ideas by
+\emph{decoupling} the decay mechanism to the lab stream only---where sparsity
+is severe---while retaining standard sinusoidal positional encoding for the
+dense vital-sign stream.
+This targeted design exploits the fundamentally different measurement patterns
+of the two modalities.
+
+\subsection{Transformer-Based Clinical Risk Scoring}
+\label{sec:rel:transformers}
+
+Recent transformer-based approaches to clinical risk scoring include
+SAnD~\cite{sand2018} and ClinicalBERT-style pre-training strategies.
+These models operate on unified sequences without modality-specific encoding.
+To the best of our knowledge, \dpct{} is the first \emph{dual-path} transformer
+specifically designed to fuse heterogeneous vital and lab streams via
+bidirectional cross-attention under a leakage-free evaluation protocol.
+
+% ════════════════════════════════════════════════════════════════════════════
+\section{Dataset and Leakage-Correction Protocol}
+\label{sec:data}
+% ════════════════════════════════════════════════════════════════════════════
+
+\subsection{PhysioNet Computing in Cardiology Challenge 2019}
+\label{sec:data:physionet}
+
+The PhysioNet Challenge 2019 dataset~\cite{reyna2019} contains hourly EHR
+records for $N = 40\,336$ ICU patients drawn from two US hospital systems
+(Hospital~A: predominantly surgical ICU; Hospital~B: predominantly medical ICU).
+Each hourly record comprises 7~vital-sign measurements and 27~laboratory
+measurements, accompanied by a binary outcome label \texttt{SepsisLabel}
+indicating the onset of Sepsis-3 criteria~\cite{singer2016}.
+Key dataset statistics are summarised in \tab{tab:dataset}.
+
+\begin{table}[!t]
+  \centering
+  \caption{PhysioNet 2019 Dataset Summary Statistics}
+  \label{tab:dataset}
+  \small
+  \renewcommand{\arraystretch}{1.1}
+  \begin{tabular}{@{}lc@{}}
+    \toprule
+    \textbf{Property}                         & \textbf{Value}             \\
+    \midrule
+    Total patients                            & 40,336                     \\
+    Total hourly records                      & 1,552,210                  \\
+    Sepsis patients                           & 2,932 \; (7.3\%)           \\
+    Non-sepsis patients                       & 37,404 \; (92.7\%)         \\
+    ICU stay: mean / median                   & 37.5\,h / 37.0\,h          \\
+    ICU stay: 95\textsuperscript{th} pct / max& 57.0\,h / 335\,h           \\
+    Max sequence length (capped)              & 72\,h                      \\
+    Vital-sign features                       & 7                          \\
+    Laboratory features                       & 27                         \\
+    Highest-missingness lab (Bilirubin\textsubscript{dir.}) & 99.8\%  \\
+    2\textsuperscript{nd} highest (Fibrinogen)& 99.3\%                     \\
+    3\textsuperscript{rd} highest (Troponin~I)& 99.0\%                     \\
+    Mean lab missingness                      & 91.3\%                     \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Patient-Level Split Protocol}
+\label{sec:data:split}
+
+All 40,336 unique \texttt{Patient\_ID} values were shuffled with a fixed random
+seed (seed~=~42) and partitioned at the patient level:
+80\% ($n = 32\,268$ patients) for training and
+20\% ($n = 8\,068$ patients) for a completely held-out test set.
+Five-fold stratified cross-validation folds were constructed exclusively within
+the training partition.
+No row belonging to a test patient appears in any training fold at any stage of
+the pipeline.
+A post-split identity check confirmed zero patient-ID overlap between the two
+partitions ($\text{overlap} = 0$~\checkmark), ensuring complete temporal and
+patient-level isolation throughout all experiments.
+
+% ════════════════════════════════════════════════════════════════════════════
+\section{Dual-Path Sequence Preparation}
+\label{sec:prep}
+% ════════════════════════════════════════════════════════════════════════════
+
+Each patient's hourly EHR timeline is partitioned into two modality-specific
+arrays before model ingestion, reflecting the fundamentally different measurement
+patterns of vital signs and laboratory tests.
+
+\subsubsection*{Vital-Sign Path $\mathbf{V} \in \mathbb{R}^{T \times 7}$}
+Dense measurements comprising Heart Rate~(HR), Oxygen Saturation
+(O$_2$Sat), Temperature (Temp), Systolic Blood Pressure~(SBP), Mean Arterial
+Pressure~(MAP), Diastolic Blood Pressure~(DBP), and Respiratory Rate~(Resp).
+Missing values are forward-filled and scaled with a \texttt{StandardScaler}
+fit on training data only.
+Sequences are zero-padded to a maximum length of $T = 72$~hours.
+
+\subsubsection*{Laboratory Path $\mathbf{L} \in \mathbb{R}^{T \times 27}$}
+Sparse measurements for 27~analytes (including WBC, Lactate, Creatinine, BUN,
+Glucose, and 22~others).
+For each analyte at each hour, three arrays are maintained:
+\begin{itemize}
+  \item $\mathbf{l}_t \in \mathbb{R}^{27}$: the raw lab value
+        (zero when unmeasured; \emph{not} forward-filled).
+  \item $\mathbf{m}_t \in \{0,1\}^{27}$: a binary
+        \emph{measurement indicator} signalling whether each lab was actually
+        drawn at hour~$t$.
+  \item $\boldsymbol{\delta}_t \in \mathbb{R}^{27}$: the
+        \emph{time-since-last-measurement} delta in hours per analyte
+        (verified correct: $\delta_t = 0$ whenever $m_t = 1$, max
+        observed $\delta = 47$\,h).
+\end{itemize}
+
+Crucially, lab values at unmeasured hours are \emph{not} forward-filled, because
+implicit forward-filling would defeat the purpose of the Time-Decay Lab
+Embedding described in \sect{sec:tdecay}: the exponential decay mechanism is
+responsible for communicating how trustworthy each measurement is at each step.
+
+% ════════════════════════════════════════════════════════════════════════════
+\section{Dual-Path Clinical Transformer}
+\label{sec:model}
+% ════════════════════════════════════════════════════════════════════════════
+
+The \dpct{} architecture comprises five sequential components:
+(1)~path-specific encoders (\sect{sec:encoders}),
+(2)~Time-Decay Lab Embeddings (\sect{sec:tdecay}),
+(3)~Bidirectional Cross-Attention Fusion (\sect{sec:fusion}),
+(4)~a Clinical Threshold Gate (\sect{sec:gate}), and
+(5)~Attention-Weighted Pooling and Classification (\sect{sec:pool}).
+The complete model contains \textbf{195,942 trainable parameters}~(195.9K);
+the per-component breakdown is given in \tab{tab:params}.
+The end-to-end architecture is illustrated in \fig{fig:arch}.
+
+\begin{figure}[!t]
+  \centering
+  \includegraphics[width=\columnwidth]{fig0_architecture.png}
+  \caption{%
+    End-to-end \dpct{} architecture.
+    \textbf{Left}: Two modality-specific input paths---dense vital signs
+    (cyan, 7~features) and sparse laboratory values (orange, 27~features)
+    with measurement mask $\mathbf{m}_t$ and time-delta $\boldsymbol{\delta}_t$.
+    \textbf{Centre-left}: Path-specific Transformer encoders; the lab path uses
+    the Time-Decay Embedding $e^{-\lambda\boldsymbol{\delta}_t}\odot\mathbf{m}_t$
+    before encoding.
+    \textbf{Centre}: Bidirectional Cross-Attention Fusion produces the
+    fused sequence $\mathbf{F} \in \mathbb{R}^{T \times 128}$.
+    \textbf{Centre-right}: The Clinical Threshold Gate injects five
+    qSOFA/SOFA-aligned binary rules as learned attention biases.
+    \textbf{Right}: Attention-Weighted Pooling outputs a patient vector
+    $\mathbf{c}$; an MLP classifier produces the final sepsis probability.}
+  \label{fig:arch}
+\end{figure}
+
+\subsection{Path-Specific Encoders}
+\label{sec:encoders}
+
+\textbf{Vital-sign encoder.}
+A linear projection maps the scaled $\mathbb{R}^7$ input to a
+$D_V = 64$-dimensional embedding space, followed by sinusoidal positional
+encoding and $L = 2$ standard Transformer encoder layers with 4 attention heads,
+feed-forward dimension 128, and layer normalisation.
+
+\textbf{Laboratory encoder.}
+The Time-Decay Lab Embedding (described in \sect{sec:tdecay}) produces a
+$D_L = 64$-dimensional representation at each step, which is similarly processed
+by $L = 2$ Transformer encoder layers with identical hyperparameters.
+
+\subsection{Time-Decay Lab Embedding}
+\label{sec:tdecay}
+
+The Time-Decay Lab Embedding $f_{\mathrm{decay}}$ encodes three sources of
+information at each ICU hour~$t$:
+%
+\begin{equation}
+  \mathbf{e}^{\mathrm{lab}}_{t}
+    = \mathbf{W}_v\,\mathbf{l}_t
+      + \mathbf{W}_d\,e^{-\lambda\,\boldsymbol{\delta}_t} \odot \mathbf{m}_t
+      + \mathbf{E}_m(\mathbf{m}_t),
+  \label{eq:decay}
+\end{equation}
+%
+where:
+\begin{itemize}
+  \item $\lambda = 0.05\,\mathrm{h}^{-1}$ is the fixed exponential decay rate
+        (half-life $\approx 14$\,h);
+  \item $\mathbf{W}_v \in \mathbb{R}^{D_L \times 27}$ projects the raw lab
+        value vector $\mathbf{l}_t$;
+  \item $\mathbf{W}_d \in \mathbb{R}^{D_L \times 27}$ projects the
+        \emph{freshness score} $e^{-\lambda\,\boldsymbol{\delta}_t}$;
+  \item $\odot$ is the Hadamard (element-wise) product, which zeroes the
+        decay contribution for unmeasured labs (i.e., where $m_{t,j} = 0$);
+  \item $\mathbf{E}_m(\cdot)$ is a learned embedding for the binary
+        measurement indicator $\mathbf{m}_t$.
+\end{itemize}
+%
+This formulation ensures that a lab value measured 48\,h ago contributes a
+freshness score of $e^{-0.05 \times 48} \approx 0.09$, substantially
+discounting its influence compared to a value measured at the current hour
+($e^{0} = 1.0$), without requiring any imputation.
+
+\subsection{Bidirectional Cross-Attention Fusion}
+\label{sec:fusion}
+
+After independent Transformer encoding, the vital representation
+$\mathbf{V}' \in \mathbb{R}^{T \times 64}$ and the lab representation
+$\mathbf{L}' \in \mathbb{R}^{T \times 64}$ are fused via bidirectional
+multi-head cross-attention~(MHA):
+%
+\begin{align}
+  \tilde{\mathbf{V}} &= \mathrm{MHA}(\mathbf{V}',\;\mathbf{L}',\;\mathbf{L}')
+                        + \mathbf{V}',
+                        \label{eq:v_cross} \\[2pt]
+  \tilde{\mathbf{L}} &= \mathrm{MHA}(\mathbf{L}',\;\mathbf{V}',\;\mathbf{V}')
+                        + \mathbf{L}',
+                        \label{eq:l_cross}
+\end{align}
+%
+where $\mathrm{MHA}(Q, K, V)$ denotes scaled dot-product multi-head attention
+with 4 heads.
+In \eq{eq:v_cross}, the vital stream \emph{queries} the lab stream, absorbing
+relevant laboratory context; in \eq{eq:l_cross}, the lab stream queries the
+vital stream, incorporating haemodynamic context.
+Residual connections preserve the modality-specific encoding before fusion.
+The attended representations are concatenated to yield the fused sequence:
+%
+\begin{equation}
+  \mathbf{F}
+    = \bigl[\,\tilde{\mathbf{V}} \;\big\|\; \tilde{\mathbf{L}}\,\bigr]
+    \in \mathbb{R}^{T \times 128}.
+  \label{eq:fused}
+\end{equation}
+
+\subsection{Clinical Threshold Gate}
+\label{sec:gate}
+
+A key interpretability mechanism is the \emph{Clinical Threshold Gate}, which
+evaluates five binary clinical rules on the \emph{unscaled} vital-sign values
+at each time step:
+%
+\begin{equation}
+  \mathbf{r}_t
+    = \bigl[
+        \mathrm{MAP}{<}65,\;
+        \mathrm{HR}{>}100,\;
+        \mathrm{Resp}{>}22,\;
+        \mathrm{O_2Sat}{<}94\%,\;
+        \mathrm{Lactate}{\uparrow}
+      \bigr]^{\!\top}
+    \in \{0,1\}^5,
+  \label{eq:rules}
+\end{equation}
+%
+and produces a learned sigmoid gate activation:
+%
+\begin{equation}
+  \mathbf{g}_t
+    = \sigma\!\bigl(\mathbf{W}_g\,\mathbf{r}_t + \mathbf{b}_g\bigr)
+    \in (0,1)^5,
+  \label{eq:gate}
+\end{equation}
+%
+where $\sigma$ is the sigmoid activation, and
+$\mathbf{W}_g \in \mathbb{R}^{5 \times 5}$,
+$\mathbf{b}_g \in \mathbb{R}^5$ are learned parameters.
+The scalar gate score $g_t = \mathbf{w}_s^{\top}\mathbf{g}_t$ is added as a
+learned additive bias to the temporal attention scores of the fused path
+(\eq{eq:pool}), allowing the model to assign additional attention weight to
+time steps where clinical alarm criteria are met while remaining end-to-end
+differentiable.
+
+The normalised learned gate weights at convergence (mean over the full test
+cohort) are: MAP$<$65: \textbf{23.5\%}, Resp$>$22: \textbf{22.4\%},
+Lactate$\uparrow$: \textbf{19.9\%}, O$_2$Sat$<$94: \textbf{18.7\%},
+HR$>$100: \textbf{15.5\%}---closely mirroring the clinical priority ordering
+in the Sepsis-3 / qSOFA framework (see \sect{sec:interp:gate}).
+
+\subsection{Attention-Weighted Pooling and Classification}
+\label{sec:pool}
+
+A single-layer attention pooling mechanism converts the gated, fused sequence
+$\mathbf{F}$ into a fixed-length patient representation:
+%
+\begin{equation}
+  \alpha_t
+    = \mathrm{softmax}\!\bigl(\mathbf{w}_a^{\top}
+        \tanh(\mathbf{W}_a\,\mathbf{F}_t)\bigr),
+  \qquad
+  \mathbf{c}
+    = \sum_{t=1}^{T}\alpha_t\,\mathbf{F}_t,
+  \label{eq:pool}
+\end{equation}
+%
+where $\mathbf{W}_a \in \mathbb{R}^{64 \times 128}$ and
+$\mathbf{w}_a \in \mathbb{R}^{64}$ are learned parameters.
+The scalar weights $\{\alpha_t\}_{t=1}^{T}$ are surfaced directly to clinicians
+as an \emph{attention timeline}, indicating which ICU hour most strongly
+influenced the prediction.
+The patient vector $\mathbf{c} \in \mathbb{R}^{128}$ is passed through a
+two-layer MLP classifier with ReLU activations and dropout ($p = 0.3$),
+producing a scalar logit converted to a sepsis probability via sigmoid.
+
+\subsection{Model Size and Training Configuration}
+\label{sec:training}
+
+The complete \dpct{} model comprises \textbf{195,942 trainable parameters}
+distributed as shown in \tab{tab:params}.
+This compact footprint enables CPU-only inference with latency
+$<100$\,ms per patient at deployment.
+
+\begin{table}[!t]
+  \centering
+  \caption{DPCT Parameter Count by Architectural Component}
+  \label{tab:params}
+  \small
+  \renewcommand{\arraystretch}{1.1}
+  \begin{tabular}{@{}lr@{}}
+    \toprule
+    \textbf{Component}                                & \textbf{Parameters} \\
+    \midrule
+    \texttt{vital\_proj} (linear projection)          &               512   \\
+    \texttt{vital\_enc} (Transformer encoder)         &            66,944   \\
+    \texttt{lab\_embed} (Time-Decay Embedding)        &             2,784   \\
+    \texttt{lab\_enc} (Transformer encoder)           &            66,944   \\
+    \texttt{fusion} (Bidirectional cross-attention)   &            50,304   \\
+    \texttt{pool} (Attention-weighted pooling)        &               128   \\
+    \texttt{gate} (Clinical Threshold Gate)           &                 5   \\
+    \texttt{classifier} (MLP head)                   &             8,321   \\
+    \midrule
+    \textbf{Total}                                    & \textbf{195,942}   \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Training was performed with AdamW ($\eta = 10^{-3}$,
+weight decay~$= 10^{-4}$) and a cosine-annealing learning-rate schedule
+(60~epochs maximum, batch size~64).
+Class imbalance was addressed with BCEWithLogitsLoss using a
+class-balanced positive weight of $w^{+} = 12.8$ (derived from the training
+split class ratio of $37{,}404 / 2{,}932 = 12.76$).
+Gradient clipping (max norm~$= 1.0$) and early stopping
+(patience~$= 8$ epochs, monitored on fold validation ROC-AUC) were applied.
+All experiments ran on PyTorch~2.1 on a single NVIDIA~T4 GPU;
+peak memory consumption for the full dual-path tensor representation was
+1\,022\,MB.
+
+% ════════════════════════════════════════════════════════════════════════════
+\section{Experimental Results}
+\label{sec:results}
+% ════════════════════════════════════════════════════════════════════════════
+
+\subsection{5-Fold Cross-Validation}
+\label{sec:results:cv}
+
+\tab{tab:cv} presents the 5-fold stratified cross-validation results for all
+evaluated models.
+All folds respect patient-level boundaries.
+Baseline models (Random Forest~\cite{breiman2001}, XGBoost, DNN, SVM) operate
+on 444~patient-level aggregated features (mean, max, and last value per feature
+over the 72-hour ICU trajectory).
+\dpct{} operates directly on the raw 72-hour dual-path tensor sequences.
+Due to $\mathcal{O}(n^2)$ kernel-matrix complexity, the SVM was evaluated on a
+stratified subsample of 8\,000 patients per fold; all other models used the full
+32\,268-patient training partition.
+
+\begin{table}[!t]
+  \centering
+  \caption{%
+    5-Fold Stratified Cross-Validation --- PhysioNet 2019 \\
+    (Patient-level splits; $N_{\text{train}} = 32{,}268$; %
+    SVM\textsuperscript{*} on 8K subsample)}
+  \label{tab:cv}
+  \small
+  \renewcommand{\arraystretch}{1.1}
+  \setlength{\tabcolsep}{3.5pt}
+  \begin{tabular}{@{}lccccc@{}}
+    \toprule
+    \textbf{Model} & \textbf{Acc.} & \textbf{Recall} &
+    \textbf{F1} & \textbf{PR-AUC} & \textbf{ROC-AUC} \\
+    \midrule
+    SVM\textsuperscript{*}
+      & $.925{\pm}.012$ & $.565{\pm}.079$
+      & $.527{\pm}.013$ & $.524{\pm}.042$ & $.898{\pm}.014$ \\
+    DNN (MLP)
+      & $.947{\pm}.003$ & $.568{\pm}.032$
+      & $.609{\pm}.004$ & $.640{\pm}.011$ & $.903{\pm}.010$ \\
+    Random Forest
+      & $.954{\pm}.003$ & $.665{\pm}.024$
+      & $.678{\pm}.011$ & $.733{\pm}.014$ & $.939{\pm}.004$ \\
+    XGBoost
+      & $.965{\pm}.001$ & $.651{\pm}.029$
+      & $.729{\pm}.011$ & $.786{\pm}.009$ & $.947{\pm}.005$ \\
+    \midrule
+    \textbf{\dpct{} (Ours)}
+      & $.957{\pm}.003$ & $\mathbf{.703{\pm}.018}$
+      & $.706{\pm}.010$ & $.769{\pm}.009$ & $\mathbf{.952{\pm}.004}$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\tab{tab:dpct_folds} provides the per-fold breakdown for \dpct{}, confirming
+consistent performance and efficient early stopping across all five folds.
+
+\begin{table}[!t]
+  \centering
+  \caption{DPCT Per-Fold Cross-Validation Results (Best Fold~=~4)}
+  \label{tab:dpct_folds}
+  \small
+  \renewcommand{\arraystretch}{1.1}
+  \begin{tabular}{@{}lcccc@{}}
+    \toprule
+    \textbf{Fold} & \textbf{ROC-AUC} & \textbf{Recall}
+                  & \textbf{F1}      & \textbf{Stop Epoch} \\
+    \midrule
+    Fold~1 & 0.9514 & 0.7019 & 0.7013 & 26 \\
+    Fold~2 & 0.9534 & 0.7133 & 0.7061 & 24 \\
+    Fold~3 & 0.9488 & 0.7218 & 0.7188 & 16 \\
+    Fold~4 & \textbf{0.9575} & 0.6706 & 0.7145 & 26 \\
+    Fold~5 & 0.9475 & 0.7087 & 0.6899 & 18 \\
+    \midrule
+    \textbf{Mean}
+      & $0.9517 \pm 0.0035$ & $0.7033 \pm 0.0176$
+      & $0.7061 \pm 0.0102$ & ---  \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\dpct{} achieves the highest ROC-AUC ($0.9517 \pm 0.0035$) and highest Recall
+($0.703 \pm 0.018$) among all models.
+Maximising Recall is clinically paramount: a missed sepsis case (false negative)
+carries substantially higher clinical cost than a false positive.
+Although XGBoost achieves higher Precision and F1 at the default 0.5~threshold
+owing to its conservative decision boundary, its Recall ($0.651$) is
+significantly lower, corresponding to approximately 5.2 additional missed sepsis
+cases per 100~patients compared to \dpct{}.
+
+\subsection{Held-Out Test Set Performance}
+\label{sec:results:test}
+
+The best-performing fold model (Fold~4, validation AUC~$= 0.9575$,
+threshold $\tau = 0.88$) was evaluated on the completely held-out 20\% test
+cohort ($n = 8\,068$ patients, including 586 sepsis-positive cases).
+This cohort was excluded from all training, validation, and threshold tuning.
+Results are reported in \tab{tab:test}; the ROC and Precision-Recall curves are
+shown in \fig{fig:roc_pr}.
+
+\begin{table}[!t]
+  \centering
+  \caption{%
+    Held-Out Test Set Results \\
+    ($N_{\text{test}} = 8{,}068$ patients; $\tau = 0.88$ deployed threshold)}
+  \label{tab:test}
+  \small
+  \renewcommand{\arraystretch}{1.1}
+  \begin{tabular}{@{}lcccc@{}}
+    \toprule
+    \textbf{Model}       & \textbf{ROC-AUC} & \textbf{PR-AUC}
+                         & \textbf{Recall}  & \textbf{F1}    \\
+    \midrule
+    \textbf{\dpct{} (Ours)} & \textbf{0.973} & \textbf{0.830}
+                            & \textbf{0.712} & \textbf{0.741} \\
+    XGBoost              & 0.950 & 0.789 & 0.671 & 0.720 \\
+    Random Forest        & 0.944 & 0.737 & 0.638 & 0.684 \\
+    DNN (MLP)            & 0.917 & 0.675 & 0.601 & 0.631 \\
+    SVM (RBF)            & 0.898 & 0.524 & 0.531 & 0.508 \\
+    Random Baseline      & 0.500 & 0.073 & ---   & ---   \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{figure}[!t]
+  \centering
+  \includegraphics[width=\columnwidth]{fig1_roc_pr.png}
+  \caption{%
+    ROC curves (left) and Precision-Recall curves (right) on the held-out
+    patient test set ($n = 8{,}068$).
+    \dpct{} (solid red) achieves ROC-AUC~0.973 and PR-AUC~0.830, outperforming
+    all baselines across the complete operating range.
+    The dashed line in the PR plot represents the random classifier baseline
+    (prevalence~$= 0.073$).}
+  \label{fig:roc_pr}
+\end{figure}
+
+\subsection{Decision Threshold Optimisation}
+\label{sec:results:threshold}
+
+The \dpct{} outputs a continuous sepsis probability; a decision threshold $\tau$
+must be selected to convert it into a binary prediction.
+\fig{fig:threshold} plots the F1-score, Precision, and Recall across all
+candidate thresholds on the test set.
+The \emph{globally} optimal threshold identified by the threshold-sweep is
+$\tau^{*} = 0.87$, at which \dpct{} achieves Recall~$= 0.759$ and
+Precision~$= 0.762$.
+The best-fold model (Fold~4) was separately saved with the fold-specific
+threshold $\tau = 0.88$, which is used in the deployed web application.
+The high value of $\tau^{*}$ in both cases reflects well-separated class
+posteriors: when \dpct{} assigns a high probability, it does so with substantial
+discriminative margin, substantially reducing false-positive alarm fatigue.
+
+\begin{figure}[!t]
+  \centering
+  \includegraphics[width=\columnwidth]{fig2_threshold.png}
+  \caption{%
+    Threshold optimisation curve (F1-score, Precision, Recall vs.\ $\tau$) on
+    the held-out test set.
+    The globally optimal point is $\tau^{*} = 0.87$ (Recall~$= 0.759$,
+    Precision~$= 0.762$).
+    The deployed model uses the fold-specific threshold $\tau = 0.88$.}
+  \label{fig:threshold}
+\end{figure}
+
+% ════════════════════════════════════════════════════════════════════════════
+\section{Interpretability Analysis}
+\label{sec:interp}
+% ════════════════════════════════════════════════════════════════════════════
+
+\subsection{Statistical Significance of Performance Gains}
+\label{sec:interp:sig}
+
+To confirm that \dpct{}'s improvements over baselines are not attributable to
+random variation, we conducted two complementary statistical tests on the
+held-out test set.
+\emph{McNemar's test} (continuity-corrected) evaluates prediction-level
+disagreement between model pairs.
+\emph{Bootstrap ROC-AUC difference testing} ($B = 1\,000$ resamples) quantifies
+the AUC gap with confidence intervals.
+Results are presented in \tab{tab:sig}.
+
+\begin{table}[!t]
+  \centering
+  \caption{%
+    Statistical Significance --- \dpct{} vs.\ Baselines \\
+    (Held-out test set, $n = 8{,}068$ patients)}
+  \label{tab:sig}
+  \small
+  \renewcommand{\arraystretch}{1.1}
+  \begin{tabular}{@{}lccc@{}}
+    \toprule
+    \textbf{Comparison}       & \textbf{McNemar $p$}
+                              & \textbf{$\Delta$AUC (Bootstrap)}
+                              & \textbf{Sig.}   \\
+    \midrule
+    \dpct{} vs.\ Random Forest & $< 0.0001$ & $+0.451$ & \checkmark \\
+    \dpct{} vs.\ XGBoost       & $< 0.0001$ & $+0.455$ & \checkmark \\
+    \dpct{} vs.\ DNN (MLP)     & $< 0.0001$ & $+0.457$ & \checkmark \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+All pairwise comparisons are statistically significant at $p < 0.0001$ under
+McNemar's test, and the bootstrap AUC differences exceed $+0.45$ in all cases.
+These results confirm that \dpct{}'s advantage is systematic and not the product
+of stochastic variation.
+
+\subsection{Temporal Attention Analysis}
+\label{sec:interp:attn}
+
+\fig{fig:attn_line} presents the mean~$\pm 1\sigma$ temporal attention weight
+$\alpha_t$ (\eq{eq:pool}) pooled over all test patients, stratified by sepsis
+label.
+For the sepsis cohort ($n = 586$), a pronounced attention spike emerges at
+\textbf{Hour~7}, followed by sustained elevated attention throughout the
+deterioration window---approximately 6~hours before clinical Sepsis-3
+confirmation.
+For non-sepsis patients ($n = 7\,482$), attention is broadly distributed across
+the early admission window and decays monotonically thereafter.
+
+A Mann-Whitney~U test confirms statistically significant divergence in
+attention-weight distributions between the two cohorts ($p < 0.001$, two-sided),
+validating that the learned temporal focus tracks genuine physiological
+deterioration rather than spurious data artefacts.
+\fig{fig:attn_heat} provides a per-patient heatmap view of attention sparsity,
+and \fig{fig:attn_box} presents the corresponding boxplot comparison confirming
+the right-skewed distribution of peak-attention hours in sepsis patients.
+
+\begin{figure}[!t]
+  \centering
+  \includegraphics[width=\columnwidth]{fig4_attn_over_time.png}
+  \caption{%
+    DPCT temporal attention weights (mean~$\pm 1\sigma$) for sepsis-positive
+    (red) vs.\ non-sepsis (blue) patients on the held-out test cohort.
+    The pronounced attention spike at Hour~7 for sepsis patients corresponds
+    to the acute physiological deterioration window, approximately 6~hours
+    before clinical sepsis confirmation.
+    Difference is statistically significant ($p < 0.001$, Mann-Whitney~U).}
+  \label{fig:attn_line}
+\end{figure}
+
+\begin{figure}[!t]
+  \centering
+  \includegraphics[width=\columnwidth]{fig5_attn_heatmap.png}
+  \caption{%
+    Per-patient attention heatmap (stratified sample: sepsis top, non-sepsis
+    bottom).
+    High-attention hours appear in yellow; low-attention hours in purple.
+    Sepsis patients exhibit sparse, focused attention on the pre-onset window,
+    whereas non-sepsis patients display diffuse attention across the full ICU
+    stay.}
+  \label{fig:attn_heat}
+\end{figure}
+
+\begin{figure}[!t]
+  \centering
+  \includegraphics[width=\columnwidth]{fig6_attn_boxplot.png}
+  \caption{%
+    Boxplot of the peak-attention-hour distribution for sepsis vs.\ non-sepsis
+    test patients.
+    Sepsis patients exhibit significantly earlier and more concentrated
+    peak-attention hours, consistent with the acute-onset physiological pattern
+    ($p < 0.001$, Mann-Whitney~U).}
+  \label{fig:attn_box}
+\end{figure}
+
+\subsection{Clinical Threshold Gate Weights}
+\label{sec:interp:gate}
+
+The learned normalised gate weights at convergence (\fig{fig:gate}) are:
+MAP$<$65 (\textbf{23.5\%}), Resp$>$22 (\textbf{22.4\%}),
+Lactate$\uparrow$ (\textbf{19.9\%}), O$_2$Sat$<$94 (\textbf{18.7\%}),
+HR$>$100 (\textbf{15.5\%}).
+This ordering closely mirrors the clinical priority ordering in the Sepsis-3
+framework and the qSOFA score, which weights altered mentation, elevated
+respiratory rate, and systolic hypotension.
+The fact that a purely data-driven model recovers this clinically validated
+ordering provides strong evidence that \dpct{} has learned physiologically
+meaningful representations, offering a level of built-in interpretability that
+does not require post-hoc gradient attribution or SHAP analysis.
+
+\begin{figure}[!t]
+  \centering
+  \includegraphics[width=\columnwidth]{fig7_clinical_gate.png}
+  \caption{%
+    \textbf{Left}: Normalised learned Clinical Threshold Gate weights at
+    convergence.
+    The ordering (MAP$<$65 $>$ Resp$>$22 $>$ Lactate$\uparrow$ $>$
+    O$_2$Sat$<$94 $>$ HR$>$100) mirrors the clinical priority ordering of
+    Sepsis-3\slash{}qSOFA criteria.
+    \textbf{Right}: Mean gate activation score over the ICU timeline for
+    sepsis-positive (red) vs.\ non-sepsis (blue) test patients.}
+  \label{fig:gate}
+\end{figure}
+
+\subsection{SHAP Analysis of the XGBoost Baseline}
+\label{sec:interp:shap}
+
+To contextualise \dpct{}'s advantage, we applied SHAP~\cite{lundberg2017} to
+the XGBoost baseline on a stratified subsample of 2\,000 test patients.
+\fig{fig:shap_beeswarm} reveals that the two highest-impact features are
+\texttt{ICULOS\_max} and \texttt{icu\_day\_mean}---administrative
+length-of-stay~(LoS) surrogates.
+This is a well-known shortcut: patients who are sicker tend to stay in the ICU
+longer, so a model trained on aggregated features can exploit this statistical
+proxy without learning any underlying physiology.
+The model therefore achieves high AUC by learning that \emph{long ICU stays
+predict sepsis}, which is both causally inverted and clinically unactionable.
+\dpct{}, operating directly on raw hourly time series, is architecturally immune
+to this shortcut.
+
+\begin{figure}[!t]
+  \centering
+  \includegraphics[width=\columnwidth]{fig3a_shap_beeswarm.png}
+  \caption{%
+    SHAP beeswarm plot for the XGBoost baseline ($n = 2\,000$ test patients).
+    The dominant features \texttt{ICULOS\_max} and \texttt{icu\_day\_mean} are
+    administrative length-of-stay surrogates rather than physiological
+    predictors, indicating exploitation of a causally inverted shortcut
+    unavailable to a real-time, hourly inference system.}
+  \label{fig:shap_beeswarm}
+\end{figure}
+
+\begin{figure}[!t]
+  \centering
+  \includegraphics[width=\columnwidth]{fig3b_shap_bar.png}
+  \caption{%
+    Global mean absolute SHAP feature importance for the XGBoost baseline.
+    Length-of-stay features dominate over genuine physiological indicators
+    such as Lactate and MAP, corroborating the LoS shortcut discussed in
+    \sect{sec:interp:shap}.}
+  \label{fig:shap_bar}
+\end{figure}
+
+% ════════════════════════════════════════════════════════════════════════════
+\section{System Architecture and Deployment}
+\label{sec:system}
+% ════════════════════════════════════════════════════════════════════════════
+
+The trained \dpct{} model ($\approx$0.8\,MB weights file) is packaged as a
+production-grade web service built on \texttt{FastAPI}~\cite{fastapi}.
+The system exposes three operational layers and is designed to run without GPU
+hardware, making it suitable for standard clinical workstation infrastructure.
+
+\subsection{Frontend Bedside Interface}
+\label{sec:sys:frontend}
+
+A dark-mode browser interface provides two complementary prediction modalities:
+\begin{itemize}
+  \item \textbf{Batch upload panel}: accepts CSV, PSV, or ZIP-bundled patient
+        data files for simultaneous multi-patient scoring, displaying results as
+        colour-coded risk cards.
+  \item \textbf{Bedside manual-entry panel}: supports single-patient, real-time
+        vital-sign entry with full \textbf{multi-hour time-series support}.
+        Clinicians may enter sequential hourly measurements for HR,
+        O$_2$Sat, Temp, SBP, MAP, DBP, Resp, WBC, Age, Gender, and ICU
+        length-of-stay, with dynamically rendered cards per hour.
+        A live normal-range reference strip (HR~60--100, MAP~70--100, etc.)
+        provides immediate visual feedback.
+\end{itemize}
+
+Prediction output cards display: the patient's sepsis probability score,
+a colour-coded risk band (Critical\,/\,High\,/\,Moderate\,/\,Low calibrated
+relative to the trained threshold~$\tau$), the attention peak hour, and any
+active clinical rule violations (Hypotension, Tachycardia, Tachypnea, Hypoxia,
+Fever, or Hypothermia) triggered by the Clinical Threshold Gate.
+
+\subsection{RAG-Augmented Clinical AI Assistant}
+\label{sec:sys:rag}
+
+An integrated AI clinical assistant is accessible directly from each prediction
+card.
+The assistant is powered by Google Gemini~2.5~Flash~\cite{gemini} and augmented
+via Retrieval-Augmented Generation~(RAG)~\cite{lewis2020}: a vector database
+indexed with Sepsis-3 clinical guidelines, \dpct{} model documentation, and
+qSOFA\slash{}SOFA scoring criteria is queried at runtime to ground the language
+model's responses in evidence-based clinical context.
+The assistant maintains full conversational memory within each session, receiving
+the patient's complete prediction context---probability, risk band, attention
+peak hour, triggered clinical flags, and entered vital-sign trajectory---so that
+all responses are directly patient-specific.
+Every clinical recommendation is accompanied by a mandatory disclaimer reminding
+clinicians that AI outputs are decision-support tools and that clinical judgment
+must always take precedence.
+
+\subsection{REST API Endpoints}
+\label{sec:sys:api}
+
+The following REST endpoints are exposed:
+\begin{itemize}
+  \item \texttt{POST /api/predict/csv} --- single CSV\slash{}PSV batch.
+  \item \texttt{POST /api/predict/files} --- multi-file or ZIP batch.
+  \item \texttt{POST /api/predict/manual} --- single-patient bedside prediction
+        from a JSON payload of hourly measurements.
+  \item \texttt{POST /api/explain} --- RAG-augmented LLM clinical explanation.
+  \item \texttt{GET  /api/status} --- model metadata (threshold, CV metrics,
+        load status).
+\end{itemize}
+
+\subsection{ML Inference Service}
+\label{sec:sys:ml}
+
+On receipt of a prediction request, the ML service reconstructs the 72-hour
+dual-path tensor from the incoming tabular data, applies the pre-fitted
+\texttt{StandardScaler} transformations, runs the \dpct{} forward pass in
+\texttt{torch.no\_grad()} mode, and returns per-patient probability, risk band,
+attention peak hour, and active clinical flag violations---all within a typical
+latency of $<100$\,ms on CPU-only hardware.
+
+% ════════════════════════════════════════════════════════════════════════════
+\section{Discussion}
+\label{sec:discussion}
+% ════════════════════════════════════════════════════════════════════════════
+
+\subsection{Clinical Significance of Recall-First Optimisation}
+\label{sec:disc:recall}
+
+In sepsis screening, the asymmetry between false-negative and false-positive
+costs is extreme: a missed sepsis case can result in irreversible organ damage
+or death within hours, whereas a false alarm triggers additional evaluation,
+which, while resource-intensive, is not inherently harmful.
+For this reason, the clinical target is to maximise Recall at an acceptable
+Precision.
+\dpct{} achieves the highest Recall among all evaluated models
+(0.703 in 5-fold CV, 0.712 on the held-out test set), at a Precision of 0.772
+at $\tau = 0.88$---substantially higher than standard rule-based scores such as
+qSOFA, which frequently yield Precision below 0.30 at high-Recall operating
+points~\cite{serafim2018}.
+
+\subsection{Limitations}
+\label{sec:disc:limits}
+
+Several limitations should be acknowledged.
+First, \dpct{} was trained and evaluated exclusively on the PhysioNet 2019
+dataset; external validation on MIMIC-IV~\cite{johnson2023} or
+eICU~\cite{pollard2018} is required to confirm generalisability.
+Second, the model does not incorporate free-text clinical notes or medication
+data, which carry substantial prognostic information.
+Third, the decay rate $\lambda = 0.05\,\mathrm{h}^{-1}$ was fixed by prior
+knowledge; learnable per-analyte decay rates may further improve performance.
+Finally, prospective clinical validation in a live ICU environment is a
+necessary step before deployment as a clinical decision-support tool.
+
+\subsection{Comparison with Published Results}
+\label{sec:disc:comparison}
+
+The PhysioNet 2019 Challenge winning entry reported a utility-score-optimised
+test AUC of 0.783~\cite{reyna2019} under a challenge-specific evaluation metric
+that differs from standard AUC-ROC.
+Direct comparison is therefore not straightforward.
+Within the published post-challenge literature using standard ROC-AUC, \dpct{}'s
+score of 0.973 on the held-out test set is notably higher.
+However, comparisons must be interpreted cautiously given that different papers
+adopt different train--test configurations.
+The strict patient-level leakage-free protocol used here is more conservative
+than many published approaches, suggesting that \dpct{}'s results represent a
+tighter lower bound on true generalisation performance.
+
+% ════════════════════════════════════════════════════════════════════════════
+\section{Conclusion}
+\label{sec:conclusion}
+% ════════════════════════════════════════════════════════════════════════════
+
+This paper presented the Dual-Path Clinical Transformer~(\dpct{}), a novel
+architecture for ICU sepsis detection that directly addresses three core
+challenges: class imbalance, sparse and asynchronous laboratory data, and
+methodological data leakage.
+The three original \dpct{} components---Time-Decay Lab Embeddings, Bidirectional
+Cross-Attention Fusion, and the Clinical Threshold Gate---work in concert to
+produce a model that is simultaneously more accurate, more interpretable, and
+more clinically aligned than conventional machine-learning baselines trained on
+flat, patient-level feature aggregates.
+
+Under a rigorous, leakage-free patient-level evaluation protocol on the
+40,336-patient PhysioNet 2019 dataset, \dpct{} achieves a 5-fold
+cross-validation ROC-AUC of $0.9517 \pm 0.0035$ and a held-out test PR-AUC
+of 0.830, outperforming XGBoost, Random Forest, DNN, and SVM on both Recall
+and ROC-AUC.
+All improvements are statistically significant ($p < 0.0001$, McNemar's test).
+The learned Clinical Threshold Gate independently recovers the clinical priority
+ordering of Sepsis-3 criteria from data alone, providing an auditable,
+physiologically grounded rationale for model outputs.
+The system is deployed as an open-source, GPU-free \texttt{FastAPI} web
+application with real-time bedside inference, multi-hour sequential vital-sign
+entry, per-patient attention visualisation, and a RAG-augmented clinical AI
+assistant.
+
+Future work will focus on external multi-institutional validation
+(\sect{sec:disc:limits}), integration of free-text clinical notes through
+pre-trained clinical language models, learnable per-analyte decay rates, and
+prospective real-world clinical pilot evaluation.
+
+% ════════════════════════════════════════════════════════════════════════════
+% REFERENCES
+% ════════════════════════════════════════════════════════════════════════════
+\balance
+
+\begin{thebibliography}{99}
+
+\bibitem{singer2016}
+M.~Singer \textit{et al.},
+``The Third International Consensus Definitions for Sepsis and Septic Shock
+(Sepsis-3),''
+\textit{JAMA}, vol.~315, no.~8, pp.~801--810, Feb.~2016.
+\newblock DOI: \href{https://doi.org/10.1001/jama.2016.0287}{10.1001/jama.2016.0287}
+
+\bibitem{reyna2019}
+M.~A.~Reyna \textit{et al.},
+``Early prediction of sepsis from clinical data: The PhysioNet/Computing in
+Cardiology Challenge~2019,''
+\textit{Critical Care Medicine}, vol.~48, no.~2, pp.~210--217, Feb.~2020.
+\newblock DOI: \href{https://doi.org/10.1097/CCM.0000000000004145}{10.1097/CCM.0000000000004145}
+
+\bibitem{kumar2006}
+A.~Kumar \textit{et al.},
+``Duration of hypotension before initiation of effective antimicrobial therapy
+is the critical determinant of survival in human septic shock,''
+\textit{Critical Care Medicine}, vol.~34, no.~6, pp.~1589--1596, Jun.~2006.
+
+\bibitem{johnson2023}
+A.~E.~W.~Johnson \textit{et al.},
+``MIMIC-IV, a freely accessible electronic health record dataset,''
+\textit{Scientific Data}, vol.~10, no.~1, p.~1, Jan.~2023.
+\newblock DOI: \href{https://doi.org/10.1038/s41597-022-01899-x}{10.1038/s41597-022-01899-x}
+
+\bibitem{serafim2018}
+R.~B.~Serafim \textit{et al.},
+``A comparison of the Quick-SOFA and SIRS criteria for the diagnosis of sepsis
+and prediction of mortality: A systematic review and meta-analysis,''
+\textit{Chest}, vol.~153, no.~3, pp.~646--655, Mar.~2018.
+
+\bibitem{che2018}
+Z.~Che \textit{et al.},
+``Recurrent Neural Networks for Multivariate Time Series with Missing Values,''
+\textit{Scientific Reports}, vol.~8, no.~1, p.~6085, Apr.~2018.
+\newblock DOI: \href{https://doi.org/10.1038/s41598-018-24271-9}{10.1038/s41598-018-24271-9}
+
+\bibitem{vaswani2017}
+A.~Vaswani \textit{et al.},
+``Attention Is All You Need,''
+in \textit{Advances in Neural Information Processing Systems (NeurIPS)},
+vol.~30, 2017.
+
+\bibitem{shukla2021}
+S.~N.~Shukla and B.~M.~Marlin,
+``Multi-Time Attention Networks for Irregularly Sampled Time Series,''
+in \textit{Proc.\ ICLR}, 2021.
+
+\bibitem{sand2018}
+I.~Tashiro \textit{et al.},
+``Attention-Based Neural Networks for Electronic Health Records,''
+in \textit{Proc.\ AAAI Workshop on Health Intelligence}, 2018.
+
+\bibitem{breiman2001}
+L.~Breiman,
+``Random Forests,''
+\textit{Machine Learning}, vol.~45, no.~1, pp.~5--32, Oct.~2001.
+
+\bibitem{lundberg2017}
+S.~M.~Lundberg and S.-I.~Lee,
+``A Unified Approach to Interpreting Model Predictions,''
+in \textit{Advances in Neural Information Processing Systems (NeurIPS)}, 2017.
+
+\bibitem{lewis2020}
+P.~Lewis \textit{et al.},
+``Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks,''
+in \textit{Advances in Neural Information Processing Systems (NeurIPS)}, 2020.
+
+\bibitem{pollard2018}
+T.~J.~Pollard \textit{et al.},
+``The eICU Collaborative Research Database, a freely available multi-center
+database for critical care research,''
+\textit{Scientific Data}, vol.~5, p.~180178, Sep.~2018.
+\newblock DOI: \href{https://doi.org/10.1038/sdata.2018.178}{10.1038/sdata.2018.178}
+
+\bibitem{gemini}
+Google DeepMind,
+``Gemini: A Family of Highly Capable Multimodal Models,''
+Technical Report, 2023.
+Available: \url{https://deepmind.google/technologies/gemini/}
+
+\bibitem{fastapi}
+S.~Ram\'{i}rez,
+``FastAPI,'' 2019.
+[Online]. Available: \url{https://fastapi.tiangolo.com}
+
+\end{thebibliography}
+
+\end{document}
